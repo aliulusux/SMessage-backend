@@ -55,7 +55,6 @@ wss.on("connection", (ws) => { // "was" -> "wss"
     });
 });
 
-server.listen(3001, () => console.log("Secure WebSocket running on wss://localhost:3001"));
 
 
 
