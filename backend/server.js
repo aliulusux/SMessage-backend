@@ -1,6 +1,6 @@
-import express from "express";
-import WebSocket = from("ws");
-import IRC = from("irc");
+const express require("express");
+const WebSocket = require("ws");
+const IRC = require("irc");
 const app = express();
 
 // HTTPS yerine HTTP server kullan
@@ -51,4 +51,5 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(3001, () => console.log("Secure WebSocket running on wss://localhost:3001"));
+
 
