@@ -1,11 +1,12 @@
-const fs = require("fs");
-const https = require("https");
+import express from "express";
 const WebSocket = require("ws");
 const IRC = require("irc");
 
-const server = https.createServer({
-  key: fs.readFileSync("./certs/key.pem"),
-  cert: fs.readFileSync("./certs/cert.pem"),
+const app = express();
+
+// HTTPS yerine HTTP server kullan
+const server = app.listen(process.env.PORT || 3000, () => {
+  console.log("Server running on port", process.env.PORT || 3000);
 });
 
 const wss = new WebSocket.Server({ server });
@@ -51,3 +52,4 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(3001, () => console.log("Secure WebSocket running on wss://localhost:3001"));
+
