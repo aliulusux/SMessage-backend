@@ -1,55 +1,91 @@
 import express from "express";
-const WebSocket = require("ws");
-const IRC = require("irc");
+import cors from "cors";
+import bodyParser from "body-parser";
+import { WebSocketServer } from "ws";
+import dotenv from "dotenv";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const irc = require("irc");
+
+dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// HTTPS yerine HTTP server kullan
-const server = app.listen(process.env.PORT || 3000, () => {
-  console.log("Server running on port", process.env.PORT || 3000);
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// Basit test endpoint
+app.get("/", (req, res) => {
+  res.send("✅ SMessage backend running successfully on Render!");
 });
 
-const wss = new WebSocket.Server({ server });
-const client = new IRC.Client("irc.freenode.net", "ReactUser", {
-  channels: ["#testchannel"],
-});
+// --- IRC Client setup ---
+let clients = {};
 
-let connectedNicks = [];
-let typingUsers = [];
+function createIRCClient(nickname, channel, onMessage) {
+  const client = new irc.Client("irc.libera.chat", nickname, {
+    channels: [channel],
+  });
+
+  client.addListener("message", (from, to, message) => {
+    if (onMessage) onMessage({ from, to, message });
+  });
+
+  client.addListener("error", (message) => {
+    console.error("IRC Error:", message);
+  });
+
+  return client;
+}
+
+// --- WebSocket Setup ---
+const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
-    const data = JSON.parse(msg);
+    try {
+      const data = JSON.parse(msg);
 
-    if (data.type === "register") {
-      if (connectedNicks.includes(data.nick)) {
-        ws.send(JSON.stringify({ type: "error", message: "Nickname kullanımda." }));
-        return ws.close();
+      if (data.type === "connect") {
+        const { nickname, channel } = data;
+        clients[ws] = createIRCClient(nickname, channel, (ircMsg) => {
+          ws.send(JSON.stringify({ type: "ircMessage", ...ircMsg }));
+        });
+        ws.send(JSON.stringify({ type: "status", message: "Connected to IRC" }));
       }
-      connectedNicks.push(data.nick);
-    }
 
-    if (data.type === "typing") {
-      typingUsers = [...new Set([...typingUsers.filter(u => u !== data.nick), data.nick])];
-      wss.clients.forEach((c) => c.send(JSON.stringify({ type: "typing", typingUsers })));
-      setTimeout(() => {
-        typingUsers = typingUsers.filter(u => u !== data.nick);
-        wss.clients.forEach((c) => c.send(JSON.stringify({ type: "typing", typingUsers })));
-      }, 2000);
-    }
-
-    if (data.type === "message") {
-      client.say(data.channel, data.text);
-      ws.send(JSON.stringify({ type: "message", ...data, status: "sent" }));
-      setTimeout(() => ws.send(JSON.stringify({ type: "message", ...data, status: "delivered" })), 500);
-      setTimeout(() => ws.send(JSON.stringify({ type: "message", ...data, status: "read" })), 2000);
+      if (data.type === "send") {
+        const { text } = data;
+        const client = clients[ws];
+        if (client) {
+          client.say(client.opt.channels[0], text);
+          ws.send(JSON.stringify({ type: "sent", text }));
+        }
+      }
+    } catch (err) {
+      console.error("WebSocket error:", err);
+      ws.send(JSON.stringify({ type: "error", message: err.message }));
     }
   });
 
   ws.on("close", () => {
-    connectedNicks = connectedNicks.filter(n => n !== ws.nick);
+    if (clients[ws]) {
+      clients[ws].disconnect("Goodbye");
+      delete clients[ws];
+    }
   });
 });
 
-server.listen(3001, () => console.log("Secure WebSocket running on wss://localhost:3001"));
+// --- HTTP server ---
+const server = app.listen(PORT, () => {
+  console.log(`🚀 SMessage backend running on port ${PORT}`);
+});
 
+// WebSocket upgrade
+server.on("upgrade", (req, socket, head) => {
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
+});
