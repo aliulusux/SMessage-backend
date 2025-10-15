@@ -84,46 +84,33 @@ wss.on("connection", (ws) => {
 
     // ✅ Mesaj gönderme
     if (data.type === "message") {
-      client.say(data.channel, data.text);
+      // İstersen IRC’ye de iletebilirsin:
+      // client.say(data.channel, data.text);
+
+      const msgObj = {
+        type: "message",
+        nick: data.nick,
+        text: data.text,
+        channel: data.channel,
+        cid: data.cid || null,
+        ts: Date.now(),
+      };
 
       // Gönderen kullanıcıya "sent"
-      ws.send(
-        JSON.stringify({
-          type: "message",
-          ...data,
-          status: "sent",
-        })
-      );
+      ws.send(JSON.stringify({ ...msgObj, status: "sent" }));
 
-      // Diğer kullanıcılara "delivered"
-      setTimeout(() => {
-        wss.clients.forEach((clientSocket) => {
-          if (
-            clientSocket !== ws &&
-            clientSocket.readyState === WebSocket.OPEN
-          ) {
-            clientSocket.send(
-              JSON.stringify({
-                type: "message",
-                ...data,
-                status: "delivered",
-              })
-            );
-          }
-        });
-      }, 500);
+      // ✅ Tüm kullanıcılara "delivered"
+      wss.clients.forEach((clientSocket) => {
+        if (clientSocket.readyState === WebSocket.OPEN) {
+          clientSocket.send(JSON.stringify({ ...msgObj, status: "delivered" }));
+        }
+      });
 
-      // "read" simülasyonu
+      // ✅ "read" simülasyonu
       setTimeout(() => {
         wss.clients.forEach((clientSocket) => {
           if (clientSocket.readyState === WebSocket.OPEN) {
-            clientSocket.send(
-              JSON.stringify({
-                type: "message",
-                ...data,
-                status: "read",
-              })
-            );
+            clientSocket.send(JSON.stringify({ ...msgObj, status: "read" }));
           }
         });
       }, 2000);
