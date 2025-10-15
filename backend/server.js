@@ -4,136 +4,137 @@ const IKC = require("irc");
 
 const app = express();
 const server = app.listen(process.env.PORT || 3000, () => {
-    console.log("Server running on port", process.env.PORT || 3000);
+  console.log("Server running on port", process.env.PORT || 3000);
 });
 
 const wss = new WebSocket.Server({ server });
-
-// Sadece IRC kullanıyorsan bu kalsın:
 const client = new IKC.Client("irc.freenode.net", "ReactUser", {
-    channels: ["Wrestchannel"],
+  channels: ["Wrestchannel"],
 });
 
-// ✅ Kullanıcıları hem nick hem kanal bazlı tutuyoruz
-let connectedUsers = []; // [{ nick: "Ali", channel: "genel" }]
+// ✅ Kullanıcı listesi burada tutuluyor
+let connectedNicks = [];
 let typingUsers = [];
 
-// ✅ Belirli kanaldaki kullanıcıları herkese gönderen yardımcı fonksiyon
-function broadcastUsers(channel) {
-    const usersInChannel = connectedUsers
-        .filter(u => u.channel === channel)
-        .map(u => u.nick);
-
-    wss.clients.forEach(client => {
-        if (client.readyState === 1 && client.channel === channel) {
-            client.send(JSON.stringify({
-                type: "users",
-                users: usersInChannel
-            }));
-        }
-    });
+// ✅ Tüm client'lara güncel kullanıcı listesini ileten fonksiyon
+function broadcastUsers() {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(
+        JSON.stringify({
+          type: "users",
+          list: connectedNicks,
+        })
+      );
+    }
+  });
 }
 
 wss.on("connection", (ws) => {
-    ws.on("message", (msg) => {
-        const data = JSON.parse(msg);
+  ws.on("message", (msg) => {
+    const data = JSON.parse(msg);
 
-        // ✅ Kullanıcı kaydı
-        if (data.type === "register") {
-            const { nick, channel } = data;
+    // ✅ Kullanıcı kayıt
+    if (data.type === "register") {
+      if (connectedNicks.includes(data.nick)) {
+        ws.send(JSON.stringify({ type: "error", message: "Nickname kullanımda." }));
+        return ws.close();
+      }
+      connectedNicks.push(data.nick);
+      ws.nick = data.nick;
 
-            // Aynı kanalda aynı nick varsa engelle
-            if (connectedUsers.find(u => u.nick === nick && u.channel === channel)) {
-                ws.send(JSON.stringify({ type: "error", message: "Nickname kullanımda." }));
-                return ws.close();
-            }
+      // ✅ Tüm client'lara bildir
+      broadcastUsers();
+      return;
+    }
 
-            connectedUsers.push({ nick, channel });
-            ws.nick = nick;
-            ws.channel = channel;
+    // ✅ "who" isteğine cevap
+    if (data.type === "who") {
+      ws.send(
+        JSON.stringify({
+          type: "users",
+          list: connectedNicks,
+        })
+      );
+      return;
+    }
 
-            // ✅ Kullanıcı listesini frontend'e yolla
-            broadcastUsers(channel);
-            return;
+    // ✅ "typing" bildirimi
+    if (data.type === "typing") {
+      typingUsers.push(data.nick);
+      typingUsers = [...new Set(typingUsers)];
+
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: "typing", typingUsers }));
         }
+      });
 
-        // ✅ Yazıyor bildirimi
-        if (data.type === "typing") {
-            if (!typingUsers.includes(ws.nick)) {
-                typingUsers.push(ws.nick);
-            }
+      setTimeout(() => {
+        typingUsers = typingUsers.filter((u) => u !== data.nick);
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: "typing", typingUsers }));
+          }
+        });
+      }, 2000);
 
-            wss.clients.forEach(client => {
-                if (client.readyState === 1 && client.channel === ws.channel) {
-                    client.send(JSON.stringify({
-                        type: "typing",
-                        typingUsers
-                    }));
-                }
-            });
+      return;
+    }
 
-            setTimeout(() => {
-                typingUsers = typingUsers.filter(u => u !== ws.nick);
-                wss.clients.forEach(client => {
-                    if (client.readyState === 1 && client.channel === ws.channel) {
-                        client.send(JSON.stringify({
-                            type: "typing",
-                            typingUsers
-                        }));
-                    }
-                });
-            }, 2000);
+    // ✅ Mesaj gönderme
+    if (data.type === "message") {
+      client.say(data.channel, data.text);
 
-            return;
-        }
+      // Gönderen kullanıcıya "sent"
+      ws.send(
+        JSON.stringify({
+          type: "message",
+          ...data,
+          status: "sent",
+        })
+      );
 
-        // ✅ Mesaj gönderimi
-        if (data.type === "message") {
-            const { channel, text } = data;
-
-            // IRC'ye de gönderiyorsan bırak, istemiyorsan silebilirsin:
-            client.say(channel, text);
-
-            // Gönderen kişiye önce local onay verelim
-            ws.send(JSON.stringify({
+      // Diğer kullanıcılara "delivered"
+      setTimeout(() => {
+        wss.clients.forEach((clientSocket) => {
+          if (
+            clientSocket !== ws &&
+            clientSocket.readyState === WebSocket.OPEN
+          ) {
+            clientSocket.send(
+              JSON.stringify({
                 type: "message",
                 ...data,
-                status: "sent"
-            }));
+                status: "delivered",
+              })
+            );
+          }
+        });
+      }, 500);
 
-            // ✅ Diğer kullanıcılara yay
-            wss.clients.forEach(c => {
-                if (c !== ws && c.readyState === 1 && c.channel === channel) {
-                    c.send(JSON.stringify({
-                        type: "message",
-                        ...data,
-                        status: "delivered"
-                    }));
-                }
-            });
+      // "read" simülasyonu
+      setTimeout(() => {
+        wss.clients.forEach((clientSocket) => {
+          if (clientSocket.readyState === WebSocket.OPEN) {
+            clientSocket.send(
+              JSON.stringify({
+                type: "message",
+                ...data,
+                status: "read",
+              })
+            );
+          }
+        });
+      }, 2000);
 
-            // ✅ Okundu (örnek amaçlı 2 saniye sonra)
-            setTimeout(() => {
-                wss.clients.forEach(c => {
-                    if (c.readyState === 1 && c.channel === channel) {
-                        c.send(JSON.stringify({
-                            type: "message",
-                            ...data,
-                            status: "read"
-                        }));
-                    }
-                });
-            }, 2000);
+      return;
+    }
+  });
 
-            return;
-        }
-    });
-
-    // ✅ Bağlantı kopunca listeden çıkar
-    ws.on("close", () => {
-        if (ws.nick) {
-            connectedUsers = connectedUsers.filter(u => u.nick !== ws.nick || u.channel !== ws.channel);
-            broadcastUsers(ws.channel);
-        }
-    });
+  // ✅ Bağlantı kapanınca listeden sil + herkese bildir
+  ws.on("close", () => {
+    connectedNicks = connectedNicks.filter((n) => n !== ws.nick);
+    broadcastUsers();
+  });
 });
