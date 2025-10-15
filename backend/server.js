@@ -1,38 +1,25 @@
-// server.js — kanal bazlı WS sohbet sunucusu
-// Özellikler:
-// - register (kanal + nick)
-// - who (kanal bazlı kullanıcı listesi)
-// - message (sent/delivered, read client'tan tetiklenir)
-// - error (gönderim hatası geri dönüşü)
-// - çoklu kanal desteği
-// - basit typing yayını (opsiyonel)
-// - bağlantı kapanınca kullanıcı listesi güncellenir
-
 const express = require("express");
 const WebSocket = require("ws");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
 const server = app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
 
 const wss = new WebSocket.Server({ server });
 
-// --- Yardımcılar ---
-
-/** Güvenli gönderim (tek client) */
+// Tek socket'e güvenli JSON gönder
 function safeSend(ws, obj) {
   try {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(obj));
     }
-  } catch (err) {
-    // sessizce geç
-  }
+  } catch {}
 }
 
-/** Aynı kanaldaki herkese yayın */
+// Belirli kanaldaki kullanıcılara yayın
 function broadcastToChannel(channel, obj) {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN && client.channel === channel) {
@@ -41,102 +28,126 @@ function broadcastToChannel(channel, obj) {
   });
 }
 
-/** Kanal bazlı kullanıcıları listele (tekilleştir) */
+// Kanal bazlı kullanıcı listesi
 function getUsersInChannel(channel) {
   const set = new Set();
-  wss.clients.forEach((c) => {
-    if (c.readyState === WebSocket.OPEN && c.channel === channel && c.nick) {
-      set.add(c.nick);
+  wss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws.channel === channel && ws.nick) {
+      set.add(ws.nick);
     }
   });
   return Array.from(set);
 }
 
-/** Kanal için kullanıcı listesini yayınla */
+// Kanal kullanıcılarını güncelle & yayınla
 function broadcastUsers(channel) {
   const list = getUsersInChannel(channel);
   broadcastToChannel(channel, { type: "users", list });
 }
 
-// --- Bağlantı ---
-
+// Yeni WS bağlantısı
 wss.on("connection", (ws) => {
-  // Heartbeat (opsiyonel)
   ws.isAlive = true;
-  ws.on("pong", () => (ws.isAlive = true));
+
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
 
   ws.on("message", (raw) => {
     let data;
     try {
       data = JSON.parse(raw);
-    } catch (e) {
-      return safeSend(ws, { type: "error", code: "BAD_JSON", message: "Geçersiz JSON." });
+    } catch {
+      return safeSend(ws, {
+        type: "error",
+        code: "BAD_JSON",
+        message: "Geçersiz JSON formatı.",
+      });
     }
 
-    const t = data?.type;
+    const type = data.type;
 
-    // --- KAYIT / KANALA GİRİŞ ---
-    if (t === "register") {
+    // Kullanıcı kayıt
+    if (type === "register") {
       const nick = String(data.nick || "").trim();
       const channel = String(data.channel || "").replace(/^#*/, "").trim();
 
       if (!nick || !channel) {
-        return safeSend(ws, { type: "error", code: "BAD_REGISTER", message: "nick ve channel zorunludur." });
+        return safeSend(ws, {
+          type: "error",
+          code: "BAD_REGISTER",
+          message: "nick ve channel zorunludur.",
+        });
       }
 
-      // Eğer daha önce başka kanala kayıtlıysa, eski kanaldan düşür
       const oldChannel = ws.channel;
       ws.nick = nick;
       ws.channel = channel;
 
-      // Önce kendisine users listesi
-      safeSend(ws, { type: "users", list: getUsersInChannel(channel) });
-      // Sonra kanala duyur
+      // Kendisine mevcut kullanıcıları gönder
+      safeSend(ws, {
+        type: "users",
+        list: getUsersInChannel(channel),
+      });
+
+      // Kanal genelini güncelle
       broadcastUsers(channel);
 
-      // Kanal değiştiyse eski kanala da users yayını yap
+      // Eski kanal varsa orada da güncelle
       if (oldChannel && oldChannel !== channel) {
         broadcastUsers(oldChannel);
       }
-
       return;
     }
 
-    // --- KİMLER VAR? ---
-    if (t === "who") {
+    // Kanal kullanıcılarını getir
+    if (type === "who") {
       const channel = String(data.channel || ws.channel || "").replace(/^#*/, "");
-      if (!channel) return safeSend(ws, { type: "error", code: "NO_CHANNEL", message: "channel gerekli." });
-      return safeSend(ws, { type: "users", list: getUsersInChannel(channel) });
+      if (!channel) {
+        return safeSend(ws, {
+          type: "error",
+          code: "NO_CHANNEL",
+          message: "channel gerekli.",
+        });
+      }
+      return safeSend(ws, {
+        type: "users",
+        list: getUsersInChannel(channel),
+      });
     }
 
-    // --- TYPING (opsiyonel) ---
-    if (t === "typing") {
+    // Yazıyor bildirimi
+    if (type === "typing") {
       const channel = ws.channel;
       if (!channel) return;
       broadcastToChannel(channel, {
         type: "typing",
-        typingUsers: [ws.nick], // basit örnek
+        typingUsers: [ws.nick],
       });
       return;
     }
 
-    // --- MESAJ GÖNDERME ---
-    if (t === "message") {
+    // Mesaj gönderimi
+    if (type === "message") {
       const channel = String(data.channel || ws.channel || "").replace(/^#*/, "");
       const nick = String(data.nick || ws.nick || "").trim();
-      const text = String(data.text ?? "");
+      const text = String(data.text || "");
       const cid = data.cid || null;
       const ts = Date.now();
 
       if (!channel || !nick) {
-        return safeSend(ws, { type: "error", code: "BAD_MESSAGE", message: "nick ve channel zorunludur." });
+        return safeSend(ws, {
+          type: "error",
+          code: "BAD_MESSAGE",
+          message: "nick ve channel zorunludur.",
+        });
       }
 
-      // 1) Gönderene 'sent'
+      // Gönderen tarafa "sent"
       safeSend(ws, {
         type: "message",
         cid,
-        id: cid, // client tarafında eşleştirme kolaylığı için id=cid
+        id: cid,
         nick,
         channel,
         text,
@@ -144,7 +155,7 @@ wss.on("connection", (ws) => {
         status: "sent",
       });
 
-      // 2) Aynı kanaldaki diğer client'lara 'delivered'
+      // Diğer kullanıcılara "delivered"
       wss.clients.forEach((client) => {
         if (
           client !== ws &&
@@ -163,22 +174,21 @@ wss.on("connection", (ws) => {
           });
         }
       });
-
-      // Not: read bilgisi client'tan gelecek (aşağıdaki 'read' bloğuna bak)
       return;
     }
 
-    // --- OKUNDU BİLGİSİ ---
-    // Frontend, mesaj UI'da görünür görünmez şunu gönderir:
-    // { type: "read", cid: "123", channel: "genel", nick: "Veli" }
-    if (t === "read") {
+    // Okundu bilgisi
+    if (type === "read") {
       const channel = String(data.channel || ws.channel || "").replace(/^#*/, "");
       const cid = data.cid;
       if (!channel || !cid) {
-        return safeSend(ws, { type: "error", code: "BAD_READ", message: "channel ve cid gerekli." });
+        return safeSend(ws, {
+          type: "error",
+          code: "BAD_READ",
+          message: "channel ve cid zorunludur.",
+        });
       }
 
-      // Aynı kanaldaki herkese 'read' durumu yay
       broadcastToChannel(channel, {
         type: "message",
         cid,
@@ -188,23 +198,28 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // --- BİLİNMEYEN TİP ---
-    safeSend(ws, { type: "error", code: "UNKNOWN_TYPE", message: `Bilinmeyen type: ${t}` });
+    // Bilinmeyen tip
+    safeSend(ws, {
+      type: "error",
+      code: "UNKNOWN_TYPE",
+      message: `Bilinmeyen type: ${type}`,
+    });
   });
 
   ws.on("close", () => {
     const ch = ws.channel;
-    // Kullanıcı ayrıldı → kanaldaki listeyi güncelle
     if (ch) broadcastUsers(ch);
   });
 });
 
-// Heartbeat - ölü bağlantıları kapat (opsiyonel ama faydalı)
+// Heartbeat (ölü bağlantıları temizleme)
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
-    try { ws.ping(); } catch {}
+    try {
+      ws.ping();
+    } catch {}
   });
 }, 30000);
 
