@@ -50,4 +50,63 @@ wss.on("connection", (ws) => {
     }
 
     if (data.type === "typing") {
-      typingUsers.push(data.n
+      typingUsers.push(data.nick);
+      typingUsers = [...new Set(typingUsers)];
+
+      wss.clients.forEach((clientSocket) => {
+        if (clientSocket.readyState === WebSocket.OPEN) {
+          clientSocket.send(JSON.stringify({ type: "typing", typingUsers }));
+        }
+      });
+
+      setTimeout(() => {
+        typingUsers = typingUsers.filter((u) => u !== data.nick);
+        wss.clients.forEach((clientSocket) => {
+          if (clientSocket.readyState === WebSocket.OPEN) {
+            clientSocket.send(JSON.stringify({ type: "typing", typingUsers }));
+          }
+        });
+      }, 2000);
+
+      return;
+    }
+
+    // ✅ Mesajlar tüm istemcilere gönderiliyor
+    if (data.type === "message") {
+      const msgObj = {
+        type: "message",
+        nick: data.nick,
+        text: data.text,
+        channel: data.channel,
+        cid: data.cid || null,
+        ts: Date.now(),
+      };
+
+      // Gönderen için "sent"
+      ws.send(JSON.stringify({ ...msgObj, status: "sent" }));
+
+      // Tüm kullanıcılara "delivered"
+      wss.clients.forEach((clientSocket) => {
+        if (clientSocket.readyState === WebSocket.OPEN) {
+          clientSocket.send(JSON.stringify({ ...msgObj, status: "delivered" }));
+        }
+      });
+
+      // "read" simülasyonu
+      setTimeout(() => {
+        wss.clients.forEach((clientSocket) => {
+          if (clientSocket.readyState === WebSocket.OPEN) {
+            clientSocket.send(JSON.stringify({ ...msgObj, status: "read" }));
+          }
+        });
+      }, 2000);
+
+      return;
+    }
+  });
+
+  ws.on("close", () => {
+    connectedNicks = connectedNicks.filter((n) => n !== ws.nick);
+    broadcastUsers();
+  });
+});
