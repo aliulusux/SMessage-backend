@@ -27,7 +27,10 @@ function broadcastUsers() {
 wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
     const data = JSON.parse(msg);
-
+if (data.type === "message") {
+console.log("MESAJ GELDI:", data);
+}
+    
     if (data.type === "register") {
       if (connectedNicks.includes(data.nick)) {
         ws.send(JSON.stringify({ type: "error", message: "Nickname kullanımda." }));
@@ -110,3 +113,4 @@ wss.on("connection", (ws) => {
     broadcastUsers();
   });
 });
+
