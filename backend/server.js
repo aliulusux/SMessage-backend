@@ -11,7 +11,6 @@ const wss = new WebSocket.Server({ server });
 let connectedNicks = [];
 let typingUsers = [];
 
-// ✅ Kullanıcı listesini herkese ilet
 function broadcastUsers() {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
@@ -29,7 +28,6 @@ wss.on("connection", (ws) => {
   ws.on("message", (msg) => {
     const data = JSON.parse(msg);
 
-    // ✅ Kullanıcı kayıt
     if (data.type === "register") {
       if (connectedNicks.includes(data.nick)) {
         ws.send(JSON.stringify({ type: "error", message: "Nickname kullanımda." }));
@@ -41,7 +39,6 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // ✅ "who" isteği
     if (data.type === "who") {
       ws.send(
         JSON.stringify({
@@ -52,66 +49,5 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // ✅ Yazıyor bildirimi
     if (data.type === "typing") {
-      typingUsers.push(data.nick);
-      typingUsers = [...new Set(typingUsers)];
-
-      wss.clients.forEach((clientSocket) => {
-        if (clientSocket.readyState === WebSocket.OPEN) {
-          clientSocket.send(JSON.stringify({ type: "typing", typingUsers }));
-        }
-      });
-
-      setTimeout(() => {
-        typingUsers = typingUsers.filter((u) => u !== data.nick);
-        wss.clients.forEach((clientSocket) => {
-          if (clientSocket.readyState === WebSocket.OPEN) {
-            clientSocket.send(JSON.stringify({ type: "typing", typingUsers }));
-          }
-        });
-      }, 2000);
-
-      return;
-    }
-
-    // ✅ ✅ MESAJ GÖNDERME (IRC YOK!)
-    if (data.type === "message") {
-      // Tüm açık socketlerde dolaş
-      wss.clients.forEach((clientSocket) => {
-        if (clientSocket.readyState === WebSocket.OPEN) {
-          clientSocket.send(
-            JSON.stringify({
-              type: "message",
-              ...data,
-              status: "delivered",
-            })
-          );
-        }
-      });
-
-      // Test amaçlı read gecikmesi
-      setTimeout(() => {
-        wss.clients.forEach((clientSocket) => {
-          if (clientSocket.readyState === WebSocket.OPEN) {
-            clientSocket.send(
-              JSON.stringify({
-                type: "message",
-                ...data,
-                status: "read",
-              })
-            );
-          }
-        });
-      }, 2000);
-
-      return;
-    }
-  });
-
-  // ✅ Kullanıcı ayrıldığında listeden sil
-  ws.on("close", () => {
-    connectedNicks = connectedNicks.filter((n) => n !== ws.nick);
-    broadcastUsers();
-  });
-});
+      typingUsers.push(data.n
